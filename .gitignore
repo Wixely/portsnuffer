@@ -1,0 +1,26 @@
+# Build output
+bin/
+obj/
+artifacts/
+
+# Visual Studio
+.vs/
+*.user
+*.rsuser
+*.suo
+
+# VS Code local workspace state
+.vscode/
+
+# Rider / ReSharper
+.idea/
+*.DotSettings.user
+
+# Logs and diagnostics
+*.log
+*.tmp
+*.cache
+
+# OS files
+.DS_Store
+Thumbs.db
