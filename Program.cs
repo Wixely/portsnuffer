@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
@@ -9,7 +10,10 @@ Application.SetDefaultPlatformHost("win32");
 Application.SetDefaultGraphicsFactory("gdi");
 
 var initialSnapshot = CaptureSnapshot();
+var currentSnapshot = initialSnapshot;
 var statusText = new ObservableValue<string>(initialSnapshot.Status);
+var portFilterText = new ObservableValue<string>(string.Empty);
+var portHighlightColor = Color.FromRgb(245, 150, 45);
 
 Window window = null!;
 ContentControl listHost = null!;
@@ -30,7 +34,7 @@ var mainWindow = new Window()
                     HorizontalScroll = ScrollMode.Disabled,
                     Content = new ContentControl
                     {
-                        Content = BuildSnapshotBody(initialSnapshot)
+                        Content = BuildSnapshotBody(currentSnapshot, portFilterText.Value)
                     }.Ref(out listHost)
                 }));
 
@@ -64,7 +68,7 @@ FrameworkElement BuildHeader()
                                 .OnClick(Application.Quit)),
                     new StackPanel()
                         .Vertical()
-                        .Spacing(4)
+                        .Spacing(6)
                         .Children(
                             new Label()
                                 .Text("portsnuffer")
@@ -76,10 +80,24 @@ FrameworkElement BuildHeader()
                                 .FontSize(12),
                             new Label()
                                 .BindText(statusText)
-                                .FontSize(11))));
+                                .FontSize(11),
+                            new StackPanel()
+                                .Horizontal()
+                                .Spacing(10)
+                                .Children(
+                                    new Label()
+                                        .Text("Search")
+                                        .CenterVertical(),
+                                    new TextBox()
+                                        .Width(280)
+                                        .OnTextChanged(text =>
+                                        {
+                                            portFilterText.Value = text;
+                                            UpdateSnapshotView();
+                                        })))));
 }
 
-Element BuildSnapshotBody(SnapshotState snapshot)
+Element BuildSnapshotBody(SnapshotState snapshot, string portFilter)
 {
     if (snapshot.ErrorMessage is not null)
     {
@@ -91,15 +109,31 @@ Element BuildSnapshotBody(SnapshotState snapshot)
         return BuildInfoCard("Nothing open", "No listening TCP or bound UDP ports were found.");
     }
 
+    var filteredProcesses = FilterProcesses(snapshot.Processes, portFilter);
+    if (filteredProcesses.Count == 0)
+    {
+        var normalizedFilter = NormalizePortFilter(portFilter);
+        return BuildInfoCard(
+            "No matching ports",
+            $"No apps matched port filter \"{normalizedFilter}\". Partial matches are supported.");
+    }
+
     return new StackPanel()
         .Vertical()
         .Spacing(12)
         .Padding(16)
-        .Children(snapshot.Processes.Select(BuildProcessCard).ToArray());
+        .Children(filteredProcesses.Select(process => BuildProcessCard(process, portFilter)).ToArray());
 }
 
-Element BuildProcessCard(PortProcessInfo processInfo)
+Element BuildProcessCard(PortProcessInfo processInfo, string portFilter)
 {
+    var matchCount = processInfo.PortBindings.Count(binding => MatchesPortFilter(binding, portFilter));
+    var portSummary = $"{processInfo.PortBindings.Count} open port{(processInfo.PortBindings.Count == 1 ? string.Empty : "s")}";
+    if (matchCount > 0)
+    {
+        portSummary += $" | {matchCount} match{(matchCount == 1 ? string.Empty : "es")}";
+    }
+
     return new Border()
         .Padding(14)
         .Margin(0, 0, 0, 4)
@@ -124,11 +158,9 @@ Element BuildProcessCard(PortProcessInfo processInfo)
                                 .FontSize(15)
                                 .Bold(),
                             new Label()
-                                .Text($"{processInfo.PortBindings.Count} open port{(processInfo.PortBindings.Count == 1 ? string.Empty : "s")}")
+                                .Text(portSummary)
                                 .FontSize(11),
-                            new Label()
-                                .Text(string.Join("   ", processInfo.PortBindings.Select(static binding => binding.DisplayText)))
-                                .TextWrapping(TextWrapping.Wrap))));
+                            BuildPortBindings(processInfo.PortBindings, portFilter))));
 }
 
 Element BuildActionArea(PortProcessInfo processInfo)
@@ -189,9 +221,9 @@ Element BuildInfoCard(string title, string message)
 
 void RefreshSnapshot()
 {
-    var snapshot = CaptureSnapshot();
-    statusText.Value = snapshot.Status;
-    listHost.Content = BuildSnapshotBody(snapshot);
+    currentSnapshot = CaptureSnapshot();
+    statusText.Value = currentSnapshot.Status;
+    UpdateSnapshotView();
 }
 
 void KillProcess(PortProcessInfo processInfo)
@@ -246,7 +278,75 @@ SnapshotState CaptureSnapshot()
     }
 }
 
-static string BuildStatus(int processCount)
+void UpdateSnapshotView()
+{
+    listHost.Content = BuildSnapshotBody(currentSnapshot, portFilterText.Value);
+}
+
+Element BuildPortBindings(IReadOnlyList<PortBinding> bindings, string portFilter)
+{
+    return new WrapPanel()
+        .Spacing(8)
+        .Children(bindings.Select(binding => BuildPortChip(binding, MatchesPortFilter(binding, portFilter))).ToArray());
+}
+
+Element BuildPortChip(PortBinding binding, bool isMatch)
+{
+    var portText = new TextBlock()
+        .Text(binding.Port.ToString(CultureInfo.InvariantCulture))
+        .FontSize(11)
+        .Bold();
+
+    if (isMatch)
+    {
+        portText.Foreground(portHighlightColor);
+    }
+
+    return new Border()
+        .Padding(8, 5)
+        .CornerRadius(999)
+        .WithTheme((theme, border) =>
+        {
+            var chipBackground = theme.Palette.ControlBackground.Lerp(theme.Palette.WindowBackground, 0.18);
+            border.Background(isMatch ? chipBackground.Lerp(portHighlightColor, 0.22) : chipBackground);
+            border.BorderBrush(isMatch ? portHighlightColor : theme.Palette.ControlBorder);
+            border.BorderThickness = 1;
+        })
+        .Child(
+            new StackPanel()
+                .Horizontal()
+                .Spacing(6)
+                .Children(
+                    new TextBlock()
+                        .Text($"{(binding.Protocol == PortProtocol.Tcp ? "TCP" : "UDP")}{(binding.IsIpv6 ? "6" : string.Empty)}")
+                        .FontSize(11),
+                    portText));
+}
+
+IReadOnlyList<PortProcessInfo> FilterProcesses(IReadOnlyList<PortProcessInfo> processes, string portFilter)
+{
+    var normalizedFilter = NormalizePortFilter(portFilter);
+    if (normalizedFilter.Length == 0)
+    {
+        return processes;
+    }
+
+    return processes
+        .Where(process => process.PortBindings.Any(binding => MatchesPortFilter(binding, normalizedFilter)))
+        .ToArray();
+}
+
+bool MatchesPortFilter(PortBinding binding, string portFilter)
+{
+    var normalizedFilter = NormalizePortFilter(portFilter);
+    return normalizedFilter.Length != 0
+        && binding.Port.ToString(CultureInfo.InvariantCulture).Contains(normalizedFilter, StringComparison.OrdinalIgnoreCase);
+}
+
+string NormalizePortFilter(string portFilter)
+    => portFilter.Trim();
+
+string BuildStatus(int processCount)
 {
     var timestamp = DateTime.Now.ToString("HH:mm:ss");
     return processCount == 0

@@ -1,0 +1,52 @@
+name: Build Tagged Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Compute artifact name
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $safeTag = $tag -replace '[^0-9A-Za-z._-]', '-'
+          $outputName = "portsnuffer-$safeTag-win-x64.exe"
+
+          "SAFE_TAG_NAME=$safeTag" >> $env:GITHUB_ENV
+          "OUTPUT_NAME=$outputName" >> $env:GITHUB_ENV
+
+      - name: Publish Native AOT win-x64 executable
+        run: >
+          dotnet publish .\portsnuffer.csproj
+          -c Release
+          -o .\artifacts\publish
+          -p:DebugType=None
+          -p:DebugSymbols=false
+
+      - name: Rename executable to include tag version
+        shell: pwsh
+        run: |
+          Rename-Item -LiteralPath .\artifacts\publish\portsnuffer.exe -NewName $env:OUTPUT_NAME
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: portsnuffer-${{ env.SAFE_TAG_NAME }}-win-x64
+          path: .\artifacts\publish\${{ env.OUTPUT_NAME }}
+          if-no-files-found: error
