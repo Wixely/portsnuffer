@@ -6,7 +6,7 @@ on:
       - "*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
@@ -50,3 +50,9 @@ jobs:
           name: portsnuffer-${{ env.SAFE_TAG_NAME }}-win-x64
           path: .\artifacts\publish\${{ env.OUTPUT_NAME }}
           if-no-files-found: error
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: .\artifacts\publish\${{ env.OUTPUT_NAME }}
+          generate_release_notes: true
