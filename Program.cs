@@ -20,6 +20,9 @@ var connectionsLoaded = false;
 var activeView = ViewMode.Ports;
 var refreshVersion = 0;
 var dnsVersion = 0;
+var searchUpdateVersion = 0;
+var hostNameUpdateQueued = false;
+var contentSwapCount = 0;
 var statusText = new ObservableValue<string>(initialSnapshot.Status);
 var portFilterText = new ObservableValue<string>(string.Empty);
 var portHighlightColor = Color.FromRgb(245, 150, 45);
@@ -104,11 +107,7 @@ FrameworkElement BuildHeader()
                                 .CenterVertical(),
                             new TextBox()
                                 .Width(220)
-                                .OnTextChanged(text =>
-                                {
-                                    portFilterText.Value = text;
-                                    UpdateSnapshotView();
-                                })),
+                                .OnTextChanged(OnSearchTextChanged)),
                     new StackPanel()
                         .Horizontal()
                         .Spacing(10)
@@ -424,6 +423,18 @@ Element BuildInfoCard(string title, string message)
                                 .TextWrapping(TextWrapping.Wrap))));
 }
 
+async void OnSearchTextChanged(string text)
+{
+    portFilterText.Value = text;
+    var requestVersion = ++searchUpdateVersion;
+
+    await Task.Delay(160);
+    if (requestVersion == searchUpdateVersion)
+    {
+        UpdateSnapshotView();
+    }
+}
+
 async void RefreshSnapshot()
 {
     var requestVersion = ++refreshVersion;
@@ -463,7 +474,7 @@ async void SwitchView(ViewMode view)
     {
         var requestVersion = ++refreshVersion;
         statusText.Value = "Scanning connections...";
-        listHost.Content = BuildInfoCard("Scanning connections", "Resolving active TCP connections...");
+        listHost.Content = BuildInfoCard("Scanning connections", "Reading active TCP connections...");
         currentConnectionSnapshot = await Task.Run(CaptureConnectionSnapshot);
         if (requestVersion != refreshVersion || activeView != ViewMode.Connections)
         {
@@ -677,7 +688,29 @@ async Task ResolveHostNameAsync(IPAddress address, int lookupVersion)
     hostNameCache[address] = hostName;
     hostNameLookupsInFlight.Remove(address);
 
-    if (lookupVersion == dnsVersion && activeView == ViewMode.Connections)
+    if (lookupVersion == dnsVersion)
+    {
+        QueueHostNameViewUpdate();
+    }
+}
+
+void QueueHostNameViewUpdate()
+{
+    if (hostNameUpdateQueued)
+    {
+        return;
+    }
+
+    hostNameUpdateQueued = true;
+    _ = ApplyHostNameViewUpdateAsync(dnsVersion);
+}
+
+async Task ApplyHostNameViewUpdateAsync(int updateVersion)
+{
+    await Task.Delay(120);
+    hostNameUpdateQueued = false;
+
+    if (updateVersion == dnsVersion && activeView == ViewMode.Connections)
     {
         UpdateSnapshotView();
     }
@@ -694,6 +727,15 @@ void UpdateSnapshotView()
     listHost.Content = activeView == ViewMode.Ports
         ? BuildSnapshotBody(currentSnapshot, portFilterText.Value)
         : BuildConnectionBody(currentConnectionSnapshot, portFilterText.Value);
+
+    if (++contentSwapCount % 10 == 0)
+    {
+        _ = Task.Run(() =>
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        });
+    }
 }
 
 Element BuildPortBindings(IReadOnlyList<PortBinding> bindings, string portFilter)
