@@ -25,16 +25,3 @@ dotnet publish .\portsnuffer.csproj -c Release
 ```
 
 That produces a standalone 64-bit Native AOT executable.
-
-## Releases
-
-GitHub Actions builds this project when you push a tag.
-The workflow publishes a Windows x64 Native AOT executable.
-
-The build artifact is named like:
-
-```text
-portsnuffer-v1.2.3-win-x64.exe
-```
-
-Repository: <https://github.com/Wixely/portsnuffer>

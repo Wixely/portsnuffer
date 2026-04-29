@@ -11,6 +11,8 @@ internal static unsafe partial class PortInventory
     private const int AddressFamilyIPv6 = (int)AddressFamily.InterNetworkV6;
     private const uint NoError = 0;
     private const uint ErrorInsufficientBuffer = 122;
+    private const uint TcpStateListen = 2;
+    private const uint TcpStateDeleteTcb = 12;
 
     public static IReadOnlyList<PortProcessInfo> Snapshot()
     {
@@ -26,6 +28,54 @@ internal static unsafe partial class PortInventory
             .OrderBy(static info => info.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static info => info.ProcessId)
             .ToArray();
+    }
+
+    public static IReadOnlyList<TcpConnectionInfo> ConnectionsSnapshot()
+    {
+        var listenerPortsByPid = Snapshot()
+            .ToDictionary(
+                static process => process.ProcessId,
+                static process => process.PortBindings
+                    .Where(static binding => binding.Protocol == PortProtocol.Tcp)
+                    .Select(static binding => binding.Port)
+                    .ToHashSet());
+
+        return EnumerateTcpConnectionsV4()
+            .Concat(EnumerateTcpConnectionsV6())
+            .Select(connection => connection with
+            {
+                ProcessName = GetProcessName(connection.ProcessId),
+                Direction = IsLikelyInbound(connection, listenerPortsByPid) ? ConnectionDirection.Inbound : ConnectionDirection.Outbound
+            })
+            .OrderBy(static connection => connection.ProcessName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static connection => connection.ProcessId)
+            .ThenBy(static connection => connection.LocalPort)
+            .ThenBy(static connection => connection.RemoteAddress.ToString(), StringComparer.Ordinal)
+            .ThenBy(static connection => connection.RemotePort)
+            .ToArray();
+    }
+
+    public static void CloseConnection(TcpConnectionInfo connection)
+    {
+        if (!connection.CanClose)
+        {
+            throw new NotSupportedException("Only IPv4 TCP connections can be closed directly.");
+        }
+
+        var row = new MibTcpRow
+        {
+            State = TcpStateDeleteTcb,
+            LocalAddress = connection.RawLocalAddress,
+            LocalPort = connection.RawLocalPort,
+            RemoteAddress = connection.RawRemoteAddress,
+            RemotePort = connection.RawRemotePort
+        };
+
+        var result = SetTcpEntry(ref row);
+        if (result != NoError)
+        {
+            throw new Win32Exception((int)result);
+        }
     }
 
     private static void AddBindings(Dictionary<int, HashSet<PortBinding>> bindingsByPid, IEnumerable<PortBinding> bindings)
@@ -51,7 +101,15 @@ internal static unsafe partial class PortInventory
             .ThenBy(static binding => binding.Port)
             .ToArray();
 
-        string name = processId switch
+        var name = GetProcessName(processId);
+
+        var canTerminate = processId > 4 && processId != Environment.ProcessId;
+        return new PortProcessInfo(processId, name, sortedBindings, canTerminate);
+    }
+
+    private static string GetProcessName(int processId)
+    {
+        var name = processId switch
         {
             0 => "Idle",
             4 => "System",
@@ -70,8 +128,7 @@ internal static unsafe partial class PortInventory
             }
         }
 
-        var canTerminate = processId > 4 && processId != Environment.ProcessId;
-        return new PortProcessInfo(processId, name, sortedBindings, canTerminate);
+        return name;
     }
 
     private static IEnumerable<PortBinding> EnumerateTcpListenersV4()
@@ -166,6 +223,82 @@ internal static unsafe partial class PortInventory
         return bindings;
     }
 
+    private static IEnumerable<TcpConnectionInfo> EnumerateTcpConnectionsV4()
+    {
+        var connections = new List<TcpConnectionInfo>();
+        foreach (var row in ReadRows<MibTcpTableOwnerPid, MibTcpRowOwnerPid>(
+                     (IntPtr buffer, ref uint size) => GetExtendedTcpTable(
+                         buffer,
+                         ref size,
+                         order: true,
+                         ulAf: AddressFamilyIPv4,
+                         tableClass: TcpTableClass.OwnerPidAll,
+                         reserved: 0)))
+        {
+            if (row.State == TcpStateListen)
+            {
+                continue;
+            }
+
+            connections.Add(new TcpConnectionInfo(
+                ProcessId: (int)row.OwningPid,
+                ProcessName: string.Empty,
+                Direction: ConnectionDirection.Outbound,
+                State: GetTcpStateName(row.State),
+                IsIpv6: false,
+                LocalAddress: ConvertIPv4Address(row.LocalAddress),
+                LocalPort: ConvertPort(row.LocalPort),
+                RemoteAddress: ConvertIPv4Address(row.RemoteAddress),
+                RemotePort: ConvertPort(row.RemotePort),
+                CanClose: true,
+                CanTerminate: CanTerminateProcess((int)row.OwningPid),
+                RawLocalAddress: row.LocalAddress,
+                RawLocalPort: row.LocalPort,
+                RawRemoteAddress: row.RemoteAddress,
+                RawRemotePort: row.RemotePort));
+        }
+
+        return connections;
+    }
+
+    private static IEnumerable<TcpConnectionInfo> EnumerateTcpConnectionsV6()
+    {
+        var connections = new List<TcpConnectionInfo>();
+        foreach (var row in ReadRows<MibTcp6TableOwnerPid, MibTcp6RowOwnerPid>(
+                     (IntPtr buffer, ref uint size) => GetExtendedTcpTable(
+                         buffer,
+                         ref size,
+                         order: true,
+                         ulAf: AddressFamilyIPv6,
+                         tableClass: TcpTableClass.OwnerPidAll,
+                         reserved: 0)))
+        {
+            if (row.State == TcpStateListen)
+            {
+                continue;
+            }
+
+            connections.Add(new TcpConnectionInfo(
+                ProcessId: (int)row.OwningPid,
+                ProcessName: string.Empty,
+                Direction: ConnectionDirection.Outbound,
+                State: GetTcpStateName(row.State),
+                IsIpv6: true,
+                LocalAddress: ConvertIPv6Address(row.LocalAddress, row.LocalScopeId),
+                LocalPort: ConvertPort(row.LocalPort),
+                RemoteAddress: ConvertIPv6Address(row.RemoteAddress, row.RemoteScopeId),
+                RemotePort: ConvertPort(row.RemotePort),
+                CanClose: false,
+                CanTerminate: CanTerminateProcess((int)row.OwningPid),
+                RawLocalAddress: 0,
+                RawLocalPort: 0,
+                RawRemoteAddress: 0,
+                RawRemotePort: 0));
+        }
+
+        return connections;
+    }
+
     private static IReadOnlyList<TRow> ReadRows<TTable, TRow>(NativeTableReader readTable)
         where TTable : unmanaged
         where TRow : unmanaged
@@ -224,6 +357,33 @@ internal static unsafe partial class PortInventory
             : new IPAddress(bytes, scopeId);
     }
 
+    private static bool CanTerminateProcess(int processId)
+        => processId > 4 && processId != Environment.ProcessId;
+
+    private static bool IsLikelyInbound(
+        TcpConnectionInfo connection,
+        IReadOnlyDictionary<int, HashSet<int>> listenerPortsByPid)
+        => listenerPortsByPid.TryGetValue(connection.ProcessId, out var listenerPorts)
+            && listenerPorts.Contains(connection.LocalPort);
+
+    private static string GetTcpStateName(uint state)
+        => state switch
+        {
+            1 => "Closed",
+            2 => "Listen",
+            3 => "Syn sent",
+            4 => "Syn received",
+            5 => "Established",
+            6 => "Fin wait 1",
+            7 => "Fin wait 2",
+            8 => "Close wait",
+            9 => "Closing",
+            10 => "Last ack",
+            11 => "Time wait",
+            12 => "Delete TCB",
+            _ => $"State {state}"
+        };
+
     private delegate uint NativeTableReader(IntPtr buffer, ref uint bufferSize);
 
     [LibraryImport("iphlpapi.dll")]
@@ -243,6 +403,9 @@ internal static unsafe partial class PortInventory
         int ulAf,
         UdpTableClass tableClass,
         uint reserved);
+
+    [LibraryImport("iphlpapi.dll")]
+    private static partial uint SetTcpEntry(ref MibTcpRow tcpRow);
 
     private enum TcpTableClass
     {
@@ -280,6 +443,16 @@ internal static unsafe partial class PortInventory
         public uint RemoteAddress;
         public uint RemotePort;
         public uint OwningPid;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MibTcpRow
+    {
+        public uint State;
+        public uint LocalAddress;
+        public uint LocalPort;
+        public uint RemoteAddress;
+        public uint RemotePort;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -340,6 +513,12 @@ internal enum PortProtocol
     Udp
 }
 
+internal enum ConnectionDirection
+{
+    Inbound,
+    Outbound
+}
+
 internal readonly record struct PortBinding(int ProcessId, PortProtocol Protocol, int Port, bool IsIpv6, IPAddress LocalAddress)
 {
     public string DisplayAddress => IsIpv6 ? $"[{LocalAddress}]" : LocalAddress.ToString();
@@ -356,4 +535,35 @@ internal sealed record PortProcessInfo(
     bool CanTerminate)
 {
     public string DisplayName => $"{Name} (PID {ProcessId})";
+}
+
+internal sealed record TcpConnectionInfo(
+    int ProcessId,
+    string ProcessName,
+    ConnectionDirection Direction,
+    string State,
+    bool IsIpv6,
+    IPAddress LocalAddress,
+    int LocalPort,
+    IPAddress RemoteAddress,
+    int RemotePort,
+    bool CanClose,
+    bool CanTerminate,
+    uint RawLocalAddress,
+    uint RawLocalPort,
+    uint RawRemoteAddress,
+    uint RawRemotePort)
+{
+    public string DisplayName => $"{ProcessName} (PID {ProcessId})";
+
+    public string LocalDisplayAddress => FormatAddress(LocalAddress, IsIpv6);
+
+    public string RemoteDisplayAddress => FormatAddress(RemoteAddress, IsIpv6);
+
+    public string LocalEndpoint => $"{LocalDisplayAddress}:{LocalPort}";
+
+    public string RemoteEndpoint => $"{RemoteDisplayAddress}:{RemotePort}";
+
+    private static string FormatAddress(IPAddress address, bool isIpv6)
+        => isIpv6 ? $"[{address}]" : address.ToString();
 }
