@@ -47,6 +47,7 @@ internal static unsafe partial class PortInventory
         var sortedBindings = bindings
             .OrderBy(static binding => binding.Protocol)
             .ThenBy(static binding => binding.IsIpv6)
+            .ThenBy(static binding => binding.LocalAddress.ToString(), StringComparer.Ordinal)
             .ThenBy(static binding => binding.Port)
             .ToArray();
 
@@ -75,6 +76,7 @@ internal static unsafe partial class PortInventory
 
     private static IEnumerable<PortBinding> EnumerateTcpListenersV4()
     {
+        var bindings = new List<PortBinding>();
         foreach (var row in ReadRows<MibTcpTableOwnerPid, MibTcpRowOwnerPid>(
                      (IntPtr buffer, ref uint size) => GetExtendedTcpTable(
                          buffer,
@@ -84,12 +86,20 @@ internal static unsafe partial class PortInventory
                          tableClass: TcpTableClass.OwnerPidListener,
                          reserved: 0)))
         {
-            yield return new PortBinding((int)row.OwningPid, PortProtocol.Tcp, ConvertPort(row.LocalPort), IsIpv6: false);
+            bindings.Add(new PortBinding(
+                (int)row.OwningPid,
+                PortProtocol.Tcp,
+                ConvertPort(row.LocalPort),
+                IsIpv6: false,
+                LocalAddress: ConvertIPv4Address(row.LocalAddress)));
         }
+
+        return bindings;
     }
 
     private static IEnumerable<PortBinding> EnumerateTcpListenersV6()
     {
+        var bindings = new List<PortBinding>();
         foreach (var row in ReadRows<MibTcp6TableOwnerPid, MibTcp6RowOwnerPid>(
                      (IntPtr buffer, ref uint size) => GetExtendedTcpTable(
                          buffer,
@@ -99,12 +109,20 @@ internal static unsafe partial class PortInventory
                          tableClass: TcpTableClass.OwnerPidListener,
                          reserved: 0)))
         {
-            yield return new PortBinding((int)row.OwningPid, PortProtocol.Tcp, ConvertPort(row.LocalPort), IsIpv6: true);
+            bindings.Add(new PortBinding(
+                (int)row.OwningPid,
+                PortProtocol.Tcp,
+                ConvertPort(row.LocalPort),
+                IsIpv6: true,
+                LocalAddress: ConvertIPv6Address(row.LocalAddress, row.LocalScopeId)));
         }
+
+        return bindings;
     }
 
     private static IEnumerable<PortBinding> EnumerateUdpListenersV4()
     {
+        var bindings = new List<PortBinding>();
         foreach (var row in ReadRows<MibUdpTableOwnerPid, MibUdpRowOwnerPid>(
                      (IntPtr buffer, ref uint size) => GetExtendedUdpTable(
                          buffer,
@@ -114,12 +132,20 @@ internal static unsafe partial class PortInventory
                          tableClass: UdpTableClass.OwnerPid,
                          reserved: 0)))
         {
-            yield return new PortBinding((int)row.OwningPid, PortProtocol.Udp, ConvertPort(row.LocalPort), IsIpv6: false);
+            bindings.Add(new PortBinding(
+                (int)row.OwningPid,
+                PortProtocol.Udp,
+                ConvertPort(row.LocalPort),
+                IsIpv6: false,
+                LocalAddress: ConvertIPv4Address(row.LocalAddress)));
         }
+
+        return bindings;
     }
 
     private static IEnumerable<PortBinding> EnumerateUdpListenersV6()
     {
+        var bindings = new List<PortBinding>();
         foreach (var row in ReadRows<MibUdp6TableOwnerPid, MibUdp6RowOwnerPid>(
                      (IntPtr buffer, ref uint size) => GetExtendedUdpTable(
                          buffer,
@@ -129,8 +155,15 @@ internal static unsafe partial class PortInventory
                          tableClass: UdpTableClass.OwnerPid,
                          reserved: 0)))
         {
-            yield return new PortBinding((int)row.OwningPid, PortProtocol.Udp, ConvertPort(row.LocalPort), IsIpv6: true);
+            bindings.Add(new PortBinding(
+                (int)row.OwningPid,
+                PortProtocol.Udp,
+                ConvertPort(row.LocalPort),
+                IsIpv6: true,
+                LocalAddress: ConvertIPv6Address(row.LocalAddress, row.LocalScopeId)));
         }
+
+        return bindings;
     }
 
     private static IReadOnlyList<TRow> ReadRows<TTable, TRow>(NativeTableReader readTable)
@@ -174,6 +207,22 @@ internal static unsafe partial class PortInventory
 
     private static int ConvertPort(uint networkOrderPort)
         => (ushort)IPAddress.NetworkToHostOrder((short)(networkOrderPort & 0xFFFF));
+
+    private static IPAddress ConvertIPv4Address(uint address)
+        => new(BitConverter.GetBytes(address));
+
+    private static IPAddress ConvertIPv6Address(byte* address, uint scopeId)
+    {
+        var bytes = new byte[16];
+        for (var index = 0; index < bytes.Length; index++)
+        {
+            bytes[index] = address[index];
+        }
+
+        return scopeId == 0
+            ? new IPAddress(bytes)
+            : new IPAddress(bytes, scopeId);
+    }
 
     private delegate uint NativeTableReader(IntPtr buffer, ref uint bufferSize);
 
@@ -291,9 +340,13 @@ internal enum PortProtocol
     Udp
 }
 
-internal readonly record struct PortBinding(int ProcessId, PortProtocol Protocol, int Port, bool IsIpv6)
+internal readonly record struct PortBinding(int ProcessId, PortProtocol Protocol, int Port, bool IsIpv6, IPAddress LocalAddress)
 {
-    public string DisplayText => $"{(Protocol == PortProtocol.Tcp ? "TCP" : "UDP")}{(IsIpv6 ? "6" : string.Empty)} {Port}";
+    public string DisplayAddress => IsIpv6 ? $"[{LocalAddress}]" : LocalAddress.ToString();
+
+    public string DisplayEndpoint => $"{DisplayAddress}:{Port}";
+
+    public string DisplayText => $"{(Protocol == PortProtocol.Tcp ? "TCP" : "UDP")}{(IsIpv6 ? "6" : string.Empty)} {DisplayEndpoint}";
 }
 
 internal sealed record PortProcessInfo(

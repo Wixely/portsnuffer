@@ -294,6 +294,12 @@ Element BuildPortBindings(IReadOnlyList<PortBinding> bindings, string portFilter
 
 Element BuildPortChip(PortBinding binding, bool isMatch)
 {
+    var addressText = new TextBlock()
+        .Text(binding.DisplayAddress)
+        .FontSize(11);
+    var separatorText = new TextBlock()
+        .Text(":")
+        .FontSize(11);
     var portText = new TextBlock()
         .Text(binding.Port.ToString(CultureInfo.InvariantCulture))
         .FontSize(11)
@@ -322,7 +328,19 @@ Element BuildPortChip(PortBinding binding, bool isMatch)
                     new TextBlock()
                         .Text($"{(binding.Protocol == PortProtocol.Tcp ? "TCP" : "UDP")}{(binding.IsIpv6 ? "6" : string.Empty)}")
                         .FontSize(11),
-                    portText));
+                    new StackPanel()
+                        .Horizontal()
+                        .Spacing(0)
+                        .WithTheme((theme, stack) =>
+                        {
+                            var mutedText = theme.Palette.WindowText.Lerp(theme.Palette.WindowBackground, 0.42);
+                            addressText.Foreground(mutedText);
+                            separatorText.Foreground(mutedText);
+                        })
+                        .Children(
+                            addressText,
+                            separatorText,
+                            portText)));
 }
 
 IReadOnlyList<PortProcessInfo> FilterProcesses(IReadOnlyList<PortProcessInfo> processes, string portFilter)
@@ -342,7 +360,9 @@ bool MatchesPortFilter(PortBinding binding, string portFilter)
 {
     var normalizedFilter = NormalizePortFilter(portFilter);
     return normalizedFilter.Length != 0
-        && binding.Port.ToString(CultureInfo.InvariantCulture).Contains(normalizedFilter, StringComparison.OrdinalIgnoreCase);
+        && (binding.Port.ToString(CultureInfo.InvariantCulture).Contains(normalizedFilter, StringComparison.OrdinalIgnoreCase)
+            || binding.LocalAddress.ToString().Contains(normalizedFilter, StringComparison.OrdinalIgnoreCase)
+            || binding.DisplayEndpoint.Contains(normalizedFilter, StringComparison.OrdinalIgnoreCase));
 }
 
 string NormalizePortFilter(string portFilter)
