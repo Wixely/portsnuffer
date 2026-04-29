@@ -43,7 +43,7 @@ Application.Run(mainWindow);
 FrameworkElement BuildHeader()
 {
     return new Border()
-        .Padding(20, 18)
+        .Padding(12, 8)
         .WithTheme((theme, border) =>
         {
             border.Background(theme.Palette.ControlBackground.Lerp(theme.Palette.WindowBackground, 0.25));
@@ -52,49 +52,46 @@ FrameworkElement BuildHeader()
         })
         .Child(
             new DockPanel()
+                .Spacing(10)
                 .Children(
                     new StackPanel()
                         .DockRight()
                         .Horizontal()
-                        .Spacing(10)
+                        .Spacing(8)
                         .Children(
                             new Button()
                                 .Content("Refresh")
-                                .Width(100)
+                                .Width(86)
                                 .OnClick(RefreshSnapshot),
                             new Button()
                                 .Content("Quit")
-                                .Width(80)
+                                .Width(68)
                                 .OnClick(Application.Quit)),
                     new StackPanel()
-                        .Vertical()
-                        .Spacing(6)
+                        .DockRight()
+                        .Horizontal()
+                        .Spacing(8)
                         .Children(
                             new Label()
-                                .Text("portsnuffer")
-                                .FontSize(22)
-                                .Bold()
-                                .WithTheme((theme, label) => label.Foreground(theme.Palette.Accent)),
-                            new Label()
-                                .Text("Listening TCP and bound UDP ports grouped by process.")
-                                .FontSize(12),
+                                .Text("Search")
+                                .FontSize(11)
+                                .CenterVertical(),
+                            new TextBox()
+                                .Width(220)
+                                .OnTextChanged(text =>
+                                {
+                                    portFilterText.Value = text;
+                                    UpdateSnapshotView();
+                                })),
+                    new StackPanel()
+                        .Horizontal()
+                        .Spacing(10)
+                        .CenterVertical()
+                        .Children(
                             new Label()
                                 .BindText(statusText)
-                                .FontSize(11),
-                            new StackPanel()
-                                .Horizontal()
-                                .Spacing(10)
-                                .Children(
-                                    new Label()
-                                        .Text("Search")
-                                        .CenterVertical(),
-                                    new TextBox()
-                                        .Width(280)
-                                        .OnTextChanged(text =>
-                                        {
-                                            portFilterText.Value = text;
-                                            UpdateSnapshotView();
-                                        })))));
+                                .FontSize(11)
+                                .CenterVertical())));
 }
 
 Element BuildSnapshotBody(SnapshotState snapshot, string portFilter)
@@ -120,8 +117,8 @@ Element BuildSnapshotBody(SnapshotState snapshot, string portFilter)
 
     return new StackPanel()
         .Vertical()
-        .Spacing(12)
-        .Padding(16)
+        .Spacing(8)
+        .Padding(10)
         .Children(filteredProcesses.Select(process => BuildProcessCard(process, portFilter)).ToArray());
 }
 
@@ -135,9 +132,9 @@ Element BuildProcessCard(PortProcessInfo processInfo, string portFilter)
     }
 
     return new Border()
-        .Padding(14)
-        .Margin(0, 0, 0, 4)
-        .CornerRadius(12)
+        .Padding(10)
+        .Margin(0, 0, 0, 2)
+        .CornerRadius(6)
         .WithTheme((theme, border) =>
         {
             border.Background(theme.Palette.ControlBackground.Lerp(theme.Palette.WindowBackground, 0.12));
@@ -146,20 +143,26 @@ Element BuildProcessCard(PortProcessInfo processInfo, string portFilter)
         })
         .Child(
             new DockPanel()
-                .Spacing(12)
+                .Spacing(10)
                 .Children(
                     BuildActionArea(processInfo).DockRight(),
                     new StackPanel()
                         .Vertical()
-                        .Spacing(4)
+                        .Spacing(6)
                         .Children(
-                            new Label()
-                                .Text(processInfo.DisplayName)
-                                .FontSize(15)
-                                .Bold(),
-                            new Label()
-                                .Text(portSummary)
-                                .FontSize(11),
+                            new StackPanel()
+                                .Horizontal()
+                                .Spacing(10)
+                                .Children(
+                                    new Label()
+                                        .Text(processInfo.DisplayName)
+                                        .FontSize(14)
+                                        .Bold()
+                                        .CenterVertical(),
+                                    new Label()
+                                        .Text(portSummary)
+                                        .FontSize(11)
+                                        .CenterVertical()),
                             BuildPortBindings(processInfo.PortBindings, portFilter))));
 }
 
@@ -167,9 +170,8 @@ Element BuildActionArea(PortProcessInfo processInfo)
 {
     var area = new StackPanel()
         .Vertical()
-        .Spacing(6)
         .CenterVertical()
-        .Width(110);
+        .Width(80);
 
     if (processInfo.CanTerminate)
     {
@@ -286,7 +288,7 @@ void UpdateSnapshotView()
 Element BuildPortBindings(IReadOnlyList<PortBinding> bindings, string portFilter)
 {
     return new WrapPanel()
-        .Spacing(8)
+        .Spacing(6)
         .Children(bindings.Select(binding => BuildPortChip(binding, MatchesPortFilter(binding, portFilter))).ToArray());
 }
 
@@ -303,8 +305,8 @@ Element BuildPortChip(PortBinding binding, bool isMatch)
     }
 
     return new Border()
-        .Padding(8, 5)
-        .CornerRadius(999)
+        .Padding(7, 4)
+        .CornerRadius(4)
         .WithTheme((theme, border) =>
         {
             var chipBackground = theme.Palette.ControlBackground.Lerp(theme.Palette.WindowBackground, 0.18);
