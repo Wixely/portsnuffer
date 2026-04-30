@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
+using System.Reflection;
 
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
@@ -26,7 +27,7 @@ var contentSwapCount = 0;
 var statusText = new ObservableValue<string>(initialSnapshot.Status);
 var portFilterText = new ObservableValue<string>(string.Empty);
 var portHighlightColor = Color.FromRgb(245, 150, 45);
-var appIconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "portsnuffer.ico");
+var appIcon = LoadAppIcon();
 var hostNameCache = new Dictionary<IPAddress, string?>();
 var hostNameLookupsInFlight = new HashSet<IPAddress>();
 
@@ -37,7 +38,7 @@ var mainWindow = new Window()
     .Resizable(1120, 760)
     .Ref(out window)
     .Title("portsnuffer")
-    .OnBuild(window => window.Icon = IconSource.FromFile(appIconPath))
+    .OnBuild(window => window.Icon = appIcon)
     .Padding(0)
     .Content(
         new DockPanel()
@@ -721,6 +722,19 @@ bool ShouldResolveHostName(IPAddress address)
         && !IPAddress.IPv6Any.Equals(address)
         && !IPAddress.Loopback.Equals(address)
         && !IPAddress.IPv6Loopback.Equals(address);
+
+IconSource LoadAppIcon()
+{
+    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("portsnuffer.ico");
+    if (stream is null)
+    {
+        return IconSource.FromFile(Path.Combine(AppContext.BaseDirectory, "Assets", "portsnuffer.ico"));
+    }
+
+    using var memory = new MemoryStream();
+    stream.CopyTo(memory);
+    return IconSource.FromBytes(memory.ToArray());
+}
 
 void UpdateSnapshotView()
 {
