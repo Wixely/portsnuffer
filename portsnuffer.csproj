@@ -14,7 +14,7 @@
     <SelfContained>true</SelfContained>
     <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <MewUIBackend>Gdi</MewUIBackend>
+    <MewUIBackend>Direct2D</MewUIBackend>
     <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**;artifacts/**</DefaultItemExcludes>
   </PropertyGroup>
 

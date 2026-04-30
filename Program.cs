@@ -7,9 +7,9 @@ using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 
 Win32Platform.Register();
-GdiBackend.Register();
+Direct2DBackend.Register();
 Application.SetDefaultPlatformHost("win32");
-Application.SetDefaultGraphicsFactory("gdi");
+Application.SetDefaultGraphicsFactory("direct2d");
 
 var initialSnapshot = CaptureSnapshot();
 var currentSnapshot = initialSnapshot;
@@ -22,8 +22,9 @@ var activeView = ViewMode.Ports;
 var refreshVersion = 0;
 var dnsVersion = 0;
 var searchUpdateVersion = 0;
+var refreshInProgress = false;
 var hostNameUpdateQueued = false;
-var contentSwapCount = 0;
+var lastRefreshStarted = DateTime.MinValue;
 var statusText = new ObservableValue<string>(initialSnapshot.Status);
 var portFilterText = new ObservableValue<string>(string.Empty);
 var portHighlightColor = Color.FromRgb(245, 150, 45);
@@ -246,15 +247,13 @@ Element BuildConnectionBody(ConnectionSnapshotState snapshot, string searchText)
 
 Element BuildConnectionCard(TcpConnectionInfo connection, string searchText)
 {
-    var processLabel = new Label()
+    var processLabel = new TextBlock()
         .Text(connection.DisplayName)
         .FontSize(14)
-        .Bold()
-        .CenterVertical();
-    var statusLabel = new Label()
+        .Bold();
+    var statusLabel = new TextBlock()
         .Text($"{connection.Direction} | {connection.State}")
-        .FontSize(11)
-        .CenterVertical();
+        .FontSize(11);
     var normalizedFilter = NormalizePortFilter(searchText);
 
     if (MatchesAnyText(normalizedFilter, connection.ProcessName, connection.ProcessId.ToString(CultureInfo.InvariantCulture)))
@@ -353,10 +352,9 @@ Element BuildEndpointBlock(string label, string address, int port, string? hostN
                 .Horizontal()
                 .Spacing(6)
                 .Children(
-                    new Label()
+                    new TextBlock()
                         .Text(label)
-                        .FontSize(11)
-                        .CenterVertical(),
+                        .FontSize(11),
                     addressText,
                     portText),
             hostText);
@@ -438,34 +436,60 @@ async void OnSearchTextChanged(string text)
 
 async void RefreshSnapshot()
 {
+    await RefreshViewAsync(activeView);
+}
+
+async Task RefreshViewAsync(ViewMode requestedView)
+{
+    if (refreshInProgress)
+    {
+        statusText.Value = "Refresh already running...";
+        return;
+    }
+
+    if (DateTime.UtcNow - lastRefreshStarted < TimeSpan.FromMilliseconds(700))
+    {
+        return;
+    }
+
+    refreshInProgress = true;
+    lastRefreshStarted = DateTime.UtcNow;
     var requestVersion = ++refreshVersion;
-    var requestedView = activeView;
-    if (requestedView == ViewMode.Ports)
+    try
     {
-        statusText.Value = "Refreshing ports...";
-        currentSnapshot = await Task.Run(CaptureSnapshot);
-        if (requestVersion != refreshVersion || activeView != requestedView)
+        if (requestedView == ViewMode.Ports)
         {
-            return;
+            statusText.Value = "Refreshing ports...";
+            var refreshedSnapshot = await Task.Run(CaptureSnapshot);
+            if (requestVersion != refreshVersion || activeView != requestedView)
+            {
+                return;
+            }
+
+            currentSnapshot = refreshedSnapshot;
+            statusText.Value = currentSnapshot.Status;
+        }
+        else
+        {
+            statusText.Value = "Refreshing connections...";
+            var refreshedSnapshot = await Task.Run(CaptureConnectionSnapshot);
+            if (requestVersion != refreshVersion || activeView != requestedView)
+            {
+                return;
+            }
+
+            currentConnectionSnapshot = refreshedSnapshot;
+            connectionsLoaded = true;
+            statusText.Value = currentConnectionSnapshot.Status;
+            QueueHostNameLookups(currentConnectionSnapshot.Connections);
         }
 
-        statusText.Value = currentSnapshot.Status;
+        UpdateSnapshotView();
     }
-    else
+    finally
     {
-        statusText.Value = "Refreshing connections...";
-        currentConnectionSnapshot = await Task.Run(CaptureConnectionSnapshot);
-        if (requestVersion != refreshVersion || activeView != requestedView)
-        {
-            return;
-        }
-
-        connectionsLoaded = true;
-        statusText.Value = currentConnectionSnapshot.Status;
-        QueueHostNameLookups(currentConnectionSnapshot.Connections);
+        refreshInProgress = false;
     }
-
-    UpdateSnapshotView();
 }
 
 async void SwitchView(ViewMode view)
@@ -473,17 +497,8 @@ async void SwitchView(ViewMode view)
     activeView = view;
     if (activeView == ViewMode.Connections && !connectionsLoaded)
     {
-        var requestVersion = ++refreshVersion;
-        statusText.Value = "Scanning connections...";
         listHost.Content = BuildInfoCard("Scanning connections", "Reading active TCP connections...");
-        currentConnectionSnapshot = await Task.Run(CaptureConnectionSnapshot);
-        if (requestVersion != refreshVersion || activeView != ViewMode.Connections)
-        {
-            return;
-        }
-
-        connectionsLoaded = true;
-        QueueHostNameLookups(currentConnectionSnapshot.Connections);
+        await RefreshViewAsync(ViewMode.Connections);
     }
 
     statusText.Value = activeView == ViewMode.Ports
@@ -708,10 +723,10 @@ void QueueHostNameViewUpdate()
 
 async Task ApplyHostNameViewUpdateAsync(int updateVersion)
 {
-    await Task.Delay(120);
+    await Task.Delay(750);
     hostNameUpdateQueued = false;
 
-    if (updateVersion == dnsVersion && activeView == ViewMode.Connections)
+    if (updateVersion == dnsVersion && activeView == ViewMode.Connections && !refreshInProgress)
     {
         UpdateSnapshotView();
     }
@@ -738,18 +753,15 @@ IconSource LoadAppIcon()
 
 void UpdateSnapshotView()
 {
-    listHost.Content = activeView == ViewMode.Ports
+    var nextContent = activeView == ViewMode.Ports
         ? BuildSnapshotBody(currentSnapshot, portFilterText.Value)
         : BuildConnectionBody(currentConnectionSnapshot, portFilterText.Value);
 
-    if (++contentSwapCount % 10 == 0)
-    {
-        _ = Task.Run(() =>
-        {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-        });
-    }
+    listHost.Content = new StackPanel();
+    GC.Collect();
+    GC.WaitForPendingFinalizers();
+
+    listHost.Content = nextContent;
 }
 
 Element BuildPortBindings(IReadOnlyList<PortBinding> bindings, string portFilter)
@@ -761,6 +773,9 @@ Element BuildPortBindings(IReadOnlyList<PortBinding> bindings, string portFilter
 
 Element BuildPortChip(PortBinding binding, bool isMatch)
 {
+    var protocolText = new TextBlock()
+        .Text($"{(binding.Protocol == PortProtocol.Tcp ? "TCP" : "UDP")}{(binding.IsIpv6 ? "6" : string.Empty)}")
+        .FontSize(11);
     var addressText = new TextBlock()
         .Text(binding.DisplayAddress)
         .FontSize(11);
@@ -791,23 +806,17 @@ Element BuildPortChip(PortBinding binding, bool isMatch)
             new StackPanel()
                 .Horizontal()
                 .Spacing(6)
+                .WithTheme((theme, stack) =>
+                {
+                    var mutedText = theme.Palette.WindowText.Lerp(theme.Palette.WindowBackground, 0.42);
+                    addressText.Foreground(mutedText);
+                    separatorText.Foreground(mutedText);
+                })
                 .Children(
-                    new TextBlock()
-                        .Text($"{(binding.Protocol == PortProtocol.Tcp ? "TCP" : "UDP")}{(binding.IsIpv6 ? "6" : string.Empty)}")
-                        .FontSize(11),
-                    new StackPanel()
-                        .Horizontal()
-                        .Spacing(0)
-                        .WithTheme((theme, stack) =>
-                        {
-                            var mutedText = theme.Palette.WindowText.Lerp(theme.Palette.WindowBackground, 0.42);
-                            addressText.Foreground(mutedText);
-                            separatorText.Foreground(mutedText);
-                        })
-                        .Children(
-                            addressText,
-                            separatorText,
-                            portText)));
+                    protocolText,
+                    addressText,
+                    separatorText,
+                    portText));
 }
 
 IReadOnlyList<PortProcessInfo> FilterProcesses(IReadOnlyList<PortProcessInfo> processes, string portFilter)
