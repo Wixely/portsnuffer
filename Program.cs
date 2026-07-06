@@ -6,6 +6,8 @@ using System.Reflection;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 
+using Microsoft.Win32;
+
 Win32Platform.Register();
 Direct2DBackend.Register();
 Application.SetDefaultPlatformHost("win32");
@@ -25,8 +27,11 @@ var searchUpdateVersion = 0;
 var refreshInProgress = false;
 var hostNameUpdateQueued = false;
 var lastRefreshStarted = DateTime.MinValue;
+const string SearchStateKeyPath = @"Software\portsnuffer";
+const string SearchStateValueName = "LastSearch";
 var statusText = new ObservableValue<string>(initialSnapshot.Status);
-var portFilterText = new ObservableValue<string>(string.Empty);
+var lastSearch = LoadLastSearch();
+var portFilterText = new ObservableValue<string>(lastSearch);
 var portHighlightColor = Color.FromRgb(245, 150, 45);
 var appIcon = LoadAppIcon();
 var hostNameCache = new Dictionary<IPAddress, string?>();
@@ -34,6 +39,7 @@ var hostNameLookupsInFlight = new HashSet<IPAddress>();
 
 Window window = null!;
 ContentControl listHost = null!;
+TextBox searchBox = null!;
 
 var mainWindow = new Window()
     .Resizable(1120, 760)
@@ -55,6 +61,13 @@ var mainWindow = new Window()
                         Content = BuildSnapshotBody(currentSnapshot, portFilterText.Value)
                     }.Ref(out listHost)
                 }));
+
+window.Loaded += () =>
+{
+    searchBox.Focus();
+    searchBox.SelectAll();
+};
+window.Closed += () => SaveLastSearch(portFilterText.Value);
 
 Application.Run(mainWindow);
 
@@ -109,6 +122,8 @@ FrameworkElement BuildHeader()
                                 .CenterVertical(),
                             new TextBox()
                                 .Width(220)
+                                .Ref(out searchBox)
+                                .Text(lastSearch)
                                 .OnTextChanged(OnSearchTextChanged)),
                     new StackPanel()
                         .Horizontal()
@@ -430,6 +445,7 @@ async void OnSearchTextChanged(string text)
     await Task.Delay(160);
     if (requestVersion == searchUpdateVersion)
     {
+        SaveLastSearch(text);
         UpdateSnapshotView();
     }
 }
@@ -893,6 +909,32 @@ string BuildConnectionStatus(int connectionCount)
     return connectionCount == 0
         ? $"No active TCP connections found at {timestamp}."
         : $"Found {connectionCount} TCP connection{(connectionCount == 1 ? string.Empty : "s")} at {timestamp}.";
+}
+
+string LoadLastSearch()
+{
+    try
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(SearchStateKeyPath);
+        return key?.GetValue(SearchStateValueName) as string ?? string.Empty;
+    }
+    catch
+    {
+        return string.Empty;
+    }
+}
+
+void SaveLastSearch(string text)
+{
+    try
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(SearchStateKeyPath);
+        key.SetValue(SearchStateValueName, text ?? string.Empty, RegistryValueKind.String);
+    }
+    catch
+    {
+        // Persisting the search term is best-effort; ignore registry failures.
+    }
 }
 
 enum ViewMode
